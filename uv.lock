@@ -1,0 +1,25 @@
+version = 1
+revision = 5
+requires-python = ">=3.14"
+
+[manifest]
+members = [
+    "polari-app",
+    "polari-explore",
+]
+
+[[package]]
+name = "polari-app"
+version = "0.1.0"
+source = { editable = "packages/polari-app" }
+dependencies = [
+    { name = "polari-explore" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "polari-explore", editable = "packages/polari-explore" }]
+
+[[package]]
+name = "polari-explore"
+version = "0.1.0"
+source = { editable = "packages/polari-explore" }
