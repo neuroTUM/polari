@@ -29,7 +29,7 @@ GOOD_FORM = {
     "pilot": "p01",
     "purpose": "Record a motor imagery baseline with the Explore device.",
     "tiredness": "3",
-    "date": "2026-11-14",
+    "date": "14-11-2026",
     "experimenter": "Orhun",
     "notes": "",
 }
@@ -117,11 +117,13 @@ def test_bad_tiredness(value: str, expected_text: str) -> None:
     assert expected_text in errors[0].message
 
 
-@pytest.mark.parametrize("value", ["14.11.2026", "2026-02-30", "tomorrow"])
+@pytest.mark.parametrize(
+    "value", ["14.11.2026", "2026-11-14", "30-02-2026", "1-11-2026", "tomorrow"]
+)
 def test_bad_date(value: str) -> None:
     errors = errors_for(date=value)
     assert error_fields(errors) == ["date"]
-    assert "YYYY-MM-DD" in errors[0].message
+    assert "DD-MM-YYYY" in errors[0].message
 
 
 @pytest.mark.parametrize("value", ["p 01", "p01/../x", "ö1"])

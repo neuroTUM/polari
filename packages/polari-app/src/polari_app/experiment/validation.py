@@ -20,6 +20,7 @@ from collections.abc import Mapping
 from dataclasses import fields
 
 from polari_app.experiment.models import (
+    DATE_FORMAT,
     TIREDNESS_MAX,
     TIREDNESS_MIN,
     ExperimentDetails,
@@ -35,6 +36,8 @@ NOTES_MAX = 5000
 
 # Pilot ids end up in folder and file names, so only allow safe characters.
 _PILOT_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
+# Dates are typed day first, like 14-11-2026.
+_DATE_PATTERN = re.compile(r"[0-9]{2}-[0-9]{2}-[0-9]{4}")
 
 _FORM_FIELDS = frozenset(f.name for f in fields(RawExperiment))
 
@@ -168,16 +171,18 @@ def _date(value: str, errors: list[FieldError]) -> dt.date | None:
     text = value.strip()
     if not text:
         errors.append(
-            FieldError("date", "Date is required, format YYYY-MM-DD (e.g. 2026-11-14).")
+            FieldError("date", "Date is required, format DD-MM-YYYY (e.g. 14-11-2026).")
         )
         return None
-    try:
-        return dt.date.fromisoformat(text)
-    except ValueError:
-        errors.append(
-            FieldError(
-                "date",
-                f"Date must be a real date in the format YYYY-MM-DD (got {text!r}).",
-            )
+    if _DATE_PATTERN.fullmatch(text):
+        try:
+            return dt.datetime.strptime(text, DATE_FORMAT).date()
+        except ValueError:
+            pass
+    errors.append(
+        FieldError(
+            "date",
+            f"Date must be a real date in the format DD-MM-YYYY (got {text!r}).",
         )
-        return None
+    )
+    return None

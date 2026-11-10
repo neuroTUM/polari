@@ -21,6 +21,9 @@ from uuid import UUID
 SCHEMA_VERSION = 1
 """Version of the stored JSON layout. Bump it when the layout changes."""
 
+DATE_FORMAT = "%d-%m-%Y"
+"""How the experiment date is typed and stored: day-month-year, e.g. 14-11-2026."""
+
 TIREDNESS_MIN = 0
 TIREDNESS_MAX = 10
 

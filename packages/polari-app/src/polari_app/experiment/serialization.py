@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID
 
 from polari_app.experiment.models import (
+    DATE_FORMAT,
     SCHEMA_VERSION,
     Comment,
     Experiment,
@@ -38,7 +39,7 @@ def experiment_to_dict(experiment: Experiment) -> dict[str, Any]:
             "pilot": d.pilot,
             "purpose": d.purpose,
             "tiredness": d.tiredness,
-            "date": d.date.isoformat(),
+            "date": d.date.strftime(DATE_FORMAT),
             "experimenter": d.experimenter,
             "notes": d.notes,
         },
