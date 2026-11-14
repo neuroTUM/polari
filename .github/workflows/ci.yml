@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches:
+      - main
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Only cancel superseded PR runs; let every main / merge-queue run finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  UV_VERSION: "0.13.6" # newest uv with a checksum known to the pinned setup-uv
+
+jobs:
+  check_lint:
+    name: "check:lint"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          prune-cache: true
+      - run: uv sync --locked --all-packages
+      - name: Lint
+        run: uv run ruff check --output-format github
+      - name: Check formatting
+        run: uv run ruff format --check
+
+  check_types:
+    name: "check:types"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          prune-cache: true
+      - run: uv sync --locked --all-packages
+      - name: Type check (ty)
+        run: uv run ty check --output-format github
+      - name: Type check (pyrefly)
+        run: uv run pyrefly check --output-format github
+
+  audit_workflows:
+    name: "audit:workflows"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          prune-cache: true
+      - run: uv sync --locked --all-packages
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }} # zero-scope token; only used for zizmor's online audits
+        run: uv run zizmor --format github --pedantic .github
+
+  audit_deps:
+    name: "audit:deps"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: false
+      - name: uv audit
+        run: uv audit --locked --preview-features audit-command
+
+  test_unit:
+    name: "test:unit"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          prune-cache: true
+      - run: uv sync --locked --all-packages
+      # Integration tests are deselected via `-m "not integration"` in pyproject addopts.
+      # Coverage settings (--cov, sources, branch) also come from pyproject.
+      - name: pytest
+        run: |
+          echo "## Coverage (unit tests)" >> "$GITHUB_STEP_SUMMARY"
+          uv run pytest \
+            --cov-report=term-missing:skip-covered \
+            --cov-report="markdown-append:$GITHUB_STEP_SUMMARY" \
+            --cov-report=html
+      - name: Upload HTML coverage report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-html
+          path: htmlcov/
+          retention-days: 14
+          if-no-files-found: ignore
