@@ -1,0 +1,47 @@
+name: Integration
+
+on:
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  # A new push supersedes the pending approval / older run.
+  cancel-in-progress: true
+
+jobs:
+  test_integration:
+    name: "test:integration"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: secrets
+    steps:
+      # Must be the first step. Blocks all egress except the endpoints below and
+      # removes sudo, so PR code can't lift the firewall to exfiltrate secrets.
+      # Add the Nextcloud host here once tests talk to it.
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: block
+          disable-telemetry: true
+          disable-sudo-and-containers: true
+          allowed-endpoints: >
+            github.com:443
+            release-assets.githubusercontent.com:443
+            releases.astral.sh:443
+            pypi.org:443
+            files.pythonhosted.org:443
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+          enable-cache: false # never restore a cache into a job that holds secrets
+      - run: uv sync --locked --all-packages
+      - name: pytest (integration)
+        env:
+          NEXTCLOUD_USERNAME: ${{ secrets.NEXTCLOUD_USERNAME }}
+          NEXTCLOUD_PASSWORD: ${{ secrets.NEXTCLOUD_PASSWORD }}
+          NEXTCLOUD_ROOT_PATH: ${{ vars.NEXTCLOUD_ROOT_PATH }} # non-secret environment variable
+        run: uv run pytest -m integration --tb=short

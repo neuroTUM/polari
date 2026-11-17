@@ -1,2 +1,59 @@
+[tool.uv]
+required-version = ">=0.13.6"
+
 [tool.uv.workspace]
 members = ["packages/*"]
+
+[dependency-groups]
+dev = [
+    "pyrefly==1.4.1",
+    "pytest==9.2.0",
+    "pytest-cov==7.1.0",
+    "ruff==0.17.5",
+    "rust-just==1.59.0",
+    "ty==0.0.104",
+    "zizmor==1.32.0",
+]
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "PT"]
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.pyrefly]
+python-version = "3.14"
+project-includes = ["packages", "tests"]
+
+[tool.pytest]
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "-m",
+    "not integration",
+    "--cov",
+    "--cov-report=term-missing:skip-covered",
+]
+markers = [
+    "integration: needs live Nextcloud config (NEXTCLOUD_USERNAME / NEXTCLOUD_PASSWORD / NEXTCLOUD_ROOT_PATH); run via `just test-integration`",
+]
+
+[tool.coverage.run]
+source = ["packages"]  # dirs, not pkgs: unimported files still count as 0%
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+include_namespace_packages = true  # walk packages/*/src (no __init__.py there)
+skip_empty = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "@overload",
+    "raise NotImplementedError",
+    "^\\s*\\.\\.\\.$",
+]
