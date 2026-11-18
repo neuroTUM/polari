@@ -1,31 +1,21 @@
 """Data models for an experiment.
 
-The flow follows the whiteboard from the 2026-11-07 software meeting::
+An experiment goes through three shapes:
 
-    str -> RawExperiment -> validate -> ExperimentDetails | list[FieldError]
+* ``RawExperiment``: what the "New Experiment" form gives us, plain strings.
+* ``ExperimentDetails``: the same form after ``validate`` checked it.
+* ``Experiment``: a stored experiment, the details plus id, revision,
+  timestamps, recordings and comments.
 
-* ``RawExperiment`` holds exactly what the "New Experiment" form gives us:
-  plain strings, nothing checked yet.
-* ``ExperimentDetails`` is the checked, typed version of the form.
-* ``Experiment`` is a stored experiment: the details plus the bookkeeping
-  fields (id, revision, timestamps, recordings, comments).
-
-All models are immutable. To change something, build a new object
-(see ``revise`` in ``polari_app.experiment.lifecycle``).
+All models are frozen. To change one, build a new object (see ``lifecycle``).
 """
 
 import datetime as dt
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from uuid import UUID
 
 SCHEMA_VERSION = 1
 """Version of the stored JSON layout. Bump it when the layout changes."""
-
-DATE_FORMAT = "%d-%m-%Y"
-"""How the experiment date is typed and stored: day-month-year, e.g. 14-11-2026."""
-
-TIREDNESS_MIN = 0
-TIREDNESS_MAX = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +66,7 @@ class Comment:
 
 @dataclass(frozen=True, slots=True)
 class Recording:
-    """One recording that belongs to an experiment (an experiment has n)."""
+    """One recording of an experiment. An experiment can have many."""
 
     id: UUID
     file_name: str
@@ -91,9 +81,9 @@ class Recording:
 class Experiment:
     """A stored experiment.
 
-    ``local_only`` is True for new experiments that exist only on this
-    computer. Once uploaded (WebDAV), it becomes False. ``revision`` counts
-    edits and lets the storage layer detect editing conflicts.
+    ``local_only`` is True while the experiment exists only on this computer
+    and becomes False once it is uploaded. ``revision`` counts the edits, so
+    the storage layer can notice when two people edited the same experiment.
     """
 
     id: UUID
@@ -102,5 +92,5 @@ class Experiment:
     created_at: dt.datetime
     updated_at: dt.datetime
     local_only: bool = True
-    recordings: tuple[Recording, ...] = field(default_factory=tuple)
-    comments: tuple[Comment, ...] = field(default_factory=tuple)
+    recordings: tuple[Recording, ...] = ()
+    comments: tuple[Comment, ...] = ()

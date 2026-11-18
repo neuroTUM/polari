@@ -1,32 +1,42 @@
 """Turn experiments into JSON and back.
 
-The JSON is what the storage layer (WebDAV) uploads. Loading checks the
-file just as carefully as the form: a broken or hand-edited file gives a
-list of ``FieldError`` instead of a crash. Nested fields use dotted names,
-e.g. ``details.tiredness`` or ``recordings[0].sample_rate_hz``.
+The JSON is what the storage layer (WebDAV) uploads. Loading checks a file
+as carefully as the form: a broken or hand-edited file gives a list of
+``FieldError`` instead of a crash. Nested fields are named like
+``details.tiredness`` or ``recordings[0].sample_rate_hz``.
+
+Loading works in two steps: first check every field and collect the
+problems, then, only if there are none, build the objects.
 """
 
 import datetime as dt
 import json
+from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
 from polari_app.experiment.models import (
-    DATE_FORMAT,
     SCHEMA_VERSION,
     Comment,
     Experiment,
     ExperimentDetails,
     FieldError,
-    RawExperiment,
     Recording,
 )
-from polari_app.experiment.validation import validate
+from polari_app.experiment.validation import DATE_FORMAT, parse_form, validate
+
+# --- Saving ------------------------------------------------------------------
+
+
+def experiment_to_json(experiment: Experiment) -> str:
+    """Stable, human-readable JSON (sorted keys, so diffs stay small)."""
+    data = experiment_to_dict(experiment)
+    return json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False)
 
 
 def experiment_to_dict(experiment: Experiment) -> dict[str, Any]:
     """A JSON-ready dict of the experiment."""
-    d = experiment.details
+    details = experiment.details
     return {
         "schema_version": SCHEMA_VERSION,
         "id": str(experiment.id),
@@ -35,38 +45,40 @@ def experiment_to_dict(experiment: Experiment) -> dict[str, Any]:
         "updated_at": experiment.updated_at.isoformat(),
         "local_only": experiment.local_only,
         "details": {
-            "title": d.title,
-            "pilot": d.pilot,
-            "purpose": d.purpose,
-            "tiredness": d.tiredness,
-            "date": d.date.strftime(DATE_FORMAT),
-            "experimenter": d.experimenter,
-            "notes": d.notes,
+            "title": details.title,
+            "pilot": details.pilot,
+            "purpose": details.purpose,
+            "tiredness": details.tiredness,
+            "date": details.date.strftime(DATE_FORMAT),
+            "experimenter": details.experimenter,
+            "notes": details.notes,
         },
-        "recordings": [
-            {
-                "id": str(r.id),
-                "file_name": r.file_name,
-                "started_at": r.started_at.isoformat(),
-                "duration_s": r.duration_s,
-                "sample_rate_hz": r.sample_rate_hz,
-                "channel_count": r.channel_count,
-                "marker_stream": r.marker_stream,
-            }
-            for r in experiment.recordings
-        ],
-        "comments": [
-            {"author": c.author, "created_at": c.created_at.isoformat(), "text": c.text}
-            for c in experiment.comments
-        ],
+        "recordings": [_recording_to_dict(r) for r in experiment.recordings],
+        "comments": [_comment_to_dict(c) for c in experiment.comments],
     }
 
 
-def experiment_to_json(experiment: Experiment) -> str:
-    """Stable, human-readable JSON (sorted keys, so diffs stay small)."""
-    return json.dumps(
-        experiment_to_dict(experiment), indent=2, sort_keys=True, ensure_ascii=False
-    )
+def _recording_to_dict(recording: Recording) -> dict[str, Any]:
+    return {
+        "id": str(recording.id),
+        "file_name": recording.file_name,
+        "started_at": recording.started_at.isoformat(),
+        "duration_s": recording.duration_s,
+        "sample_rate_hz": recording.sample_rate_hz,
+        "channel_count": recording.channel_count,
+        "marker_stream": recording.marker_stream,
+    }
+
+
+def _comment_to_dict(comment: Comment) -> dict[str, Any]:
+    return {
+        "author": comment.author,
+        "created_at": comment.created_at.isoformat(),
+        "text": comment.text,
+    }
+
+
+# --- Loading -----------------------------------------------------------------
 
 
 def experiment_from_json(text: str) -> Experiment | list[FieldError]:
@@ -74,12 +86,8 @@ def experiment_from_json(text: str) -> Experiment | list[FieldError]:
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        return [
-            FieldError(
-                "file",
-                f"Not valid JSON: {exc.msg} at line {exc.lineno}, column {exc.colno}.",
-            )
-        ]
+        message = f"Not valid JSON: {exc.msg} (line {exc.lineno}, column {exc.colno})."
+        return [FieldError("file", message)]
     return experiment_from_dict(data)
 
 
@@ -88,216 +96,181 @@ def experiment_from_dict(data: object) -> Experiment | list[FieldError]:
     if not isinstance(data, dict):
         return [FieldError("file", "The top level must be a JSON object.")]
 
-    reader = _Reader()
     version = data.get("schema_version")
     if version != SCHEMA_VERSION:
-        return [
-            FieldError(
-                "schema_version",
-                f"Unsupported schema version {version!r}; this version of polari reads {SCHEMA_VERSION}.",
-            )
-        ]
+        message = f"Unsupported schema version {version!r}, expected {SCHEMA_VERSION}."
+        return [FieldError("schema_version", message)]
 
-    experiment_id = reader.read_uuid(data, "id", "id")
-    revision = reader.read_int(data, "revision", "revision", minimum=0)
-    created_at = reader.read_datetime(data, "created_at", "created_at")
-    updated_at = reader.read_datetime(data, "updated_at", "updated_at")
-    local_only = reader.read_bool(data, "local_only", "local_only")
-    details = _details(data.get("details"), reader)
-    recordings = [
-        _recording(item, f"recordings[{i}]", reader)
-        for i, item in enumerate(reader.read_list(data, "recordings"))
-    ]
-    comments = [
-        _comment(item, f"comments[{i}]", reader)
-        for i, item in enumerate(reader.read_list(data, "comments"))
-    ]
+    # Step 1: check everything.
+    errors: list[FieldError] = []
+    _check_fields(data, EXPERIMENT_CHECKS, "", errors)
+    details = _load_details(data.get("details"), errors)
+    _check_list(data, "recordings", RECORDING_CHECKS, errors)
+    _check_list(data, "comments", COMMENT_CHECKS, errors)
+    if errors or details is None:
+        return errors
 
-    if (
-        reader.errors
-        or experiment_id is None
-        or revision is None
-        or created_at is None
-        or updated_at is None
-        or local_only is None
-        or details is None
-    ):
-        return reader.errors
-
+    # Step 2: every value is known to be fine, so build the objects.
     return Experiment(
-        id=experiment_id,
+        id=UUID(data["id"]),
         details=details,
-        revision=revision,
-        created_at=created_at,
-        updated_at=updated_at,
-        local_only=local_only,
-        recordings=tuple(r for r in recordings if r is not None),
-        comments=tuple(c for c in comments if c is not None),
+        revision=data["revision"],
+        created_at=dt.datetime.fromisoformat(data["created_at"]),
+        updated_at=dt.datetime.fromisoformat(data["updated_at"]),
+        local_only=data["local_only"],
+        recordings=tuple(_build_recording(r) for r in data.get("recordings", [])),
+        comments=tuple(_build_comment(c) for c in data.get("comments", [])),
     )
 
 
-def _details(data: object, reader: "_Reader") -> ExperimentDetails | None:
+def _load_details(data: object, errors: list[FieldError]) -> ExperimentDetails | None:
     if not isinstance(data, dict):
-        reader.errors.append(FieldError("details", "Missing or not an object."))
+        errors.append(FieldError("details", "Missing or not an object."))
         return None
-    # Reuse the form validation so stored files follow the same rules.
-    raw = RawExperiment(
-        **{key: _as_text(data.get(key)) for key in RawExperiment.__dataclass_fields__}
-    )
-    result = validate(raw)
+    # Stored files follow the same rules as the form.
+    as_text = {key: "" if value is None else str(value) for key, value in data.items()}
+    result = validate(parse_form(as_text))
     if isinstance(result, list):
-        reader.errors.extend(
-            FieldError(f"details.{e.field}", e.message) for e in result
-        )
+        errors.extend(FieldError(f"details.{e.field}", e.message) for e in result)
         return None
     return result
 
 
-def _recording(data: object, path: str, reader: "_Reader") -> Recording | None:
-    if not isinstance(data, dict):
-        reader.errors.append(FieldError(path, "Must be an object."))
-        return None
-    recording_id = reader.read_uuid(data, "id", f"{path}.id")
-    file_name = reader.read_str(data, "file_name", f"{path}.file_name", required=True)
-    started_at = reader.read_datetime(data, "started_at", f"{path}.started_at")
-    duration_s = reader.read_float(data, "duration_s", f"{path}.duration_s")
-    sample_rate_hz = reader.read_float(data, "sample_rate_hz", f"{path}.sample_rate_hz")
-    channel_count = reader.read_int(
-        data, "channel_count", f"{path}.channel_count", minimum=1
-    )
-    marker_stream = reader.read_str(
-        data, "marker_stream", f"{path}.marker_stream", required=False
-    )
-    if (
-        recording_id is None
-        or file_name is None
-        or started_at is None
-        or duration_s is None
-        or sample_rate_hz is None
-        or channel_count is None
-        or marker_stream is None
-    ):
-        return None
+def _build_recording(data: dict[str, Any]) -> Recording:
     return Recording(
-        recording_id,
-        file_name,
-        started_at,
-        duration_s,
-        sample_rate_hz,
-        channel_count,
-        marker_stream,
+        id=UUID(data["id"]),
+        file_name=data["file_name"],
+        started_at=dt.datetime.fromisoformat(data["started_at"]),
+        duration_s=float(data["duration_s"]),
+        sample_rate_hz=float(data["sample_rate_hz"]),
+        channel_count=data["channel_count"],
+        marker_stream=data.get("marker_stream") or "",
     )
 
 
-def _comment(data: object, path: str, reader: "_Reader") -> Comment | None:
-    if not isinstance(data, dict):
-        reader.errors.append(FieldError(path, "Must be an object."))
-        return None
-    author = reader.read_str(data, "author", f"{path}.author", required=True)
-    created_at = reader.read_datetime(data, "created_at", f"{path}.created_at")
-    text = reader.read_str(data, "text", f"{path}.text", required=True)
-    if author is None or created_at is None or text is None:
-        return None
-    return Comment(author, created_at, text)
+def _build_comment(data: dict[str, Any]) -> Comment:
+    return Comment(
+        author=data["author"],
+        created_at=dt.datetime.fromisoformat(data["created_at"]),
+        text=data["text"],
+    )
 
 
-def _as_text(value: object) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bool):  # bool is an int subclass; never accept it as a number
-        return repr(value)
-    return str(value)
+# --- Field checks ------------------------------------------------------------
+# Each check takes a value from the file and returns an error message,
+# or None if the value is fine.
+
+Check = Callable[[object], str | None]
+EXAMPLE_TIME = "'2026-11-14T10:00:00+01:00'"
 
 
-class _Reader:
-    """Reads typed values from a dict and collects errors along the way."""
-
-    def __init__(self) -> None:
-        self.errors: list[FieldError] = []
-
-    def _fail(self, path: str, message: str) -> None:
-        self.errors.append(FieldError(path, message))
-
-    def read_str(
-        self, data: dict[str, Any], key: str, path: str, *, required: bool
-    ) -> str | None:
-        value = data.get(key, None if required else "")
-        if not isinstance(value, str) or (required and not value.strip()):
-            self._fail(
-                path, "Must be a non-empty string." if required else "Must be a string."
-            )
-            return None
-        return value
-
-    def read_int(
-        self, data: dict[str, Any], key: str, path: str, *, minimum: int
-    ) -> int | None:
-        value = data.get(key)
-        if isinstance(value, bool) or not isinstance(value, int):
-            self._fail(path, f"Must be a whole number (got {value!r}).")
-            return None
-        if value < minimum:
-            self._fail(path, f"Must be at least {minimum} (got {value}).")
-            return None
-        return value
-
-    def read_float(self, data: dict[str, Any], key: str, path: str) -> float | None:
-        value = data.get(key)
-        if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
-            self._fail(path, f"Must be a number of at least 0 (got {value!r}).")
-            return None
-        return float(value)
-
-    def read_bool(self, data: dict[str, Any], key: str, path: str) -> bool | None:
-        value = data.get(key)
-        if not isinstance(value, bool):
-            self._fail(path, f"Must be true or false (got {value!r}).")
-            return None
-        return value
-
-    def read_uuid(self, data: dict[str, Any], key: str, path: str) -> UUID | None:
-        value = data.get(key)
+def _check_uuid(value: object) -> str | None:
+    if isinstance(value, str):
         try:
-            return (
-                UUID(str(value))
-                if isinstance(value, str)
-                else self._bad_uuid(path, value)
-            )
+            UUID(value)
+            return None
         except ValueError:
-            return self._bad_uuid(path, value)
+            pass
+    return f"Must be a UUID (got {value!r})."
 
-    def _bad_uuid(self, path: str, value: object) -> None:
-        self._fail(
-            path,
-            f"Must be a UUID like '123e4567-e89b-12d3-a456-426614174000' (got {value!r}).",
-        )
 
-    def read_datetime(
-        self, data: dict[str, Any], key: str, path: str
-    ) -> dt.datetime | None:
-        value = data.get(key)
-        if isinstance(value, str):
-            try:
-                parsed = dt.datetime.fromisoformat(value)
-            except ValueError:
-                pass
-            else:
-                if parsed.tzinfo is not None:
-                    return parsed
-                self._fail(
-                    path,
-                    f"Must include a time zone, e.g. '2026-11-14T10:00:00+01:00' (got {value!r}).",
-                )
-                return None
-        self._fail(
-            path,
-            f"Must be an ISO date and time, e.g. '2026-11-14T10:00:00+01:00' (got {value!r}).",
-        )
-        return None
+def _check_timestamp(value: object) -> str | None:
+    if not isinstance(value, str):
+        return f"Must be an ISO date and time like {EXAMPLE_TIME} (got {value!r})."
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except ValueError:
+        return f"Must be an ISO date and time like {EXAMPLE_TIME} (got {value!r})."
+    if parsed.tzinfo is None:
+        return f"Must include a time zone like {EXAMPLE_TIME} (got {value!r})."
+    return None
 
-    def read_list(self, data: dict[str, Any], key: str) -> list[object]:
-        value = data.get(key, [])
-        if not isinstance(value, list):
-            self._fail(key, "Must be a list.")
-            return []
-        return value
+
+def _check_whole_number(value: object, minimum: int) -> str | None:
+    # bool is a subclass of int in Python, so True would pass as 1.
+    if isinstance(value, bool) or not isinstance(value, int):
+        return f"Must be a whole number (got {value!r})."
+    if value < minimum:
+        return f"Must be at least {minimum} (got {value})."
+    return None
+
+
+def _check_revision(value: object) -> str | None:
+    return _check_whole_number(value, minimum=0)
+
+
+def _check_channel_count(value: object) -> str | None:
+    return _check_whole_number(value, minimum=1)
+
+
+def _check_positive_number(value: object) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        return f"Must be a number of at least 0 (got {value!r})."
+    return None
+
+
+def _check_bool(value: object) -> str | None:
+    if not isinstance(value, bool):
+        return f"Must be true or false (got {value!r})."
+    return None
+
+
+def _check_required_text(value: object) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return "Must be a non-empty string."
+    return None
+
+
+def _check_optional_text(value: object) -> str | None:
+    if value is not None and not isinstance(value, str):
+        return "Must be a string."
+    return None
+
+
+EXPERIMENT_CHECKS: dict[str, Check] = {
+    "id": _check_uuid,
+    "revision": _check_revision,
+    "created_at": _check_timestamp,
+    "updated_at": _check_timestamp,
+    "local_only": _check_bool,
+}
+
+RECORDING_CHECKS: dict[str, Check] = {
+    "id": _check_uuid,
+    "file_name": _check_required_text,
+    "started_at": _check_timestamp,
+    "duration_s": _check_positive_number,
+    "sample_rate_hz": _check_positive_number,
+    "channel_count": _check_channel_count,
+    "marker_stream": _check_optional_text,
+}
+
+COMMENT_CHECKS: dict[str, Check] = {
+    "author": _check_required_text,
+    "created_at": _check_timestamp,
+    "text": _check_required_text,
+}
+
+
+def _check_fields(
+    data: dict[str, Any], checks: dict[str, Check], path: str, errors: list[FieldError]
+) -> None:
+    for key, check in checks.items():
+        problem = check(data.get(key))
+        if problem:
+            errors.append(FieldError(f"{path}.{key}" if path else key, problem))
+
+
+def _check_list(
+    data: dict[str, Any], key: str, checks: dict[str, Check], errors: list[FieldError]
+) -> None:
+    items = data.get(key, [])
+    if not isinstance(items, list):
+        errors.append(FieldError(key, "Must be a list."))
+        return
+    for i, item in enumerate(items):
+        path = f"{key}[{i}]"
+        if isinstance(item, dict):
+            _check_fields(item, checks, path, errors)
+        else:
+            errors.append(FieldError(path, "Must be an object."))
