@@ -1,29 +1,32 @@
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
-from polari_app.storage.errors import InvalidResponseError
+from polari_storage.errors import InvalidResponseError
 
+# ElementTree turns namespaced tags into "{uri}localname".
+# So the prefix the server picks never matters: <d:href>, <D:href> and
+# <href xmlns="DAV:"> are all the same tag.
 _DAV = "{DAV:}"
-_MULTISTATUS = f"{_DAV}multistatus"
-_RESPONSE = f"{_DAV}response"
-_HREF = f"{_DAV}href"
-_STATUS = f"{_DAV}status"
-_PROPSTAT = f"{_DAV}propstat"
-_PROP = f"{_DAV}prop"
-_RESOURCETYPE = f"{_DAV}resourcetype"
-_COLLECTION = f"{_DAV}collection"
-_GETCONTENTLENGTH = f"{_DAV}getcontentlength"
-_GETETAG = f"{_DAV}getetag"
+MULTISTATUS = f"{_DAV}multistatus"
+RESPONSE = f"{_DAV}response"
+HREF = f"{_DAV}href"
+STATUS = f"{_DAV}status"
+PROPSTAT = f"{_DAV}propstat"
+PROP = f"{_DAV}prop"
+RESOURCETYPE = f"{_DAV}resourcetype"
+COLLECTION = f"{_DAV}collection"
+GETCONTENTLENGTH = f"{_DAV}getcontentlength"
+# Nextcloud's size of a resource.
+# For a folder it is the size of everything inside.
+OC_SIZE = "{http://owncloud.org/ns}size"
 
-# ElementTree expands every tag to ``{namespace-uri}localname``, so the
-# prefix a server uses for the DAV: namespace never matters.
 PROPFIND_BODY = (
     b'<?xml version="1.0" encoding="utf-8"?>\n'
-    b'<d:propfind xmlns:d="DAV:">'
-    b"<d:prop><d:resourcetype/><d:getcontentlength/><d:getetag/></d:prop>"
+    b'<d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">'
+    b"<d:prop><d:resourcetype/><d:getcontentlength/><oc:size/></d:prop>"
     b"</d:propfind>"
 )
-"""Request only the properties ``ObjectInfo`` needs."""
+"""The PROPFIND body. It asks only for the properties the storage uses."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,29 +36,30 @@ class PropfindResource:
     href: str
     is_collection: bool
     content_length: int | None
-    etag: str | None
+    size: int | None
 
 
 def parse_multistatus(body: bytes) -> list[PropfindResource]:
     """Parse a 207 Multi-Status body into resources, in document order.
 
-    Only properties inside ``<d:propstat>`` groups with a 2xx status are
-    used. Groups with other statuses (typically ``404 Not Found`` for
-    properties a resource does not have) are ignored.
-
-    Raises :class:`InvalidResponseError` for malformed XML, DTDs, a wrong
-    root element, missing ``href``/``resourcetype`` or invalid values.
+    Only ``<d:propstat>`` groups with a 2xx status are used.
+    Other groups are ignored.
+    They typically list properties a resource does not have, with 404.
+    Raises :class:`InvalidResponseError` for malformed XML or a DTD.
+    It also raises it for a wrong root element or invalid values.
+    It also raises it if ``href`` or ``resourcetype`` is missing.
     """
-    # WebDAV never needs a DTD. Refusing it blocks entity expansion tricks.
+    # WebDAV never needs a DTD.
+    # Refusing it blocks entity expansion attacks.
     if b"<!DOCTYPE" in body:
         raise InvalidResponseError("XML with a DOCTYPE is not accepted")
     try:
         root = ET.fromstring(body)
     except ET.ParseError as exc:
         raise InvalidResponseError(f"Malformed XML: {exc}") from exc
-    if root.tag != _MULTISTATUS:
+    if root.tag != MULTISTATUS:
         raise InvalidResponseError(f"Expected DAV: multistatus, got {root.tag!r}")
-    return [_parse_response(element) for element in root.findall(_RESPONSE)]
+    return [_parse_response(element) for element in root.findall(RESPONSE)]
 
 
 def parse_status_line(text: str | None) -> int:
@@ -72,12 +76,12 @@ def parse_status_line(text: str | None) -> int:
 
 
 def _parse_response(element: ET.Element) -> PropfindResource:
-    hrefs = element.findall(_HREF)
+    hrefs = element.findall(HREF)
     if len(hrefs) != 1 or not (hrefs[0].text or "").strip():
         raise InvalidResponseError("Each response needs exactly one non-empty href")
     href = (hrefs[0].text or "").strip()
 
-    response_status = element.find(_STATUS)
+    response_status = element.find(STATUS)
     if response_status is not None:
         code = parse_status_line(response_status.text)
         raise InvalidResponseError(
@@ -85,37 +89,44 @@ def _parse_response(element: ET.Element) -> PropfindResource:
         )
 
     found: dict[str, ET.Element] = {}
-    propstats = element.findall(_PROPSTAT)
+    propstats = element.findall(PROPSTAT)
     if not propstats:
         raise InvalidResponseError(f"No propstat for {href!r}")
     for propstat in propstats:
-        code = parse_status_line(_text_of(propstat.find(_STATUS)))
+        code = parse_status_line(_text_of(propstat.find(STATUS)))
         if not 200 <= code < 300:
             continue
-        prop = propstat.find(_PROP)
+        prop = propstat.find(PROP)
         if prop is None:
             raise InvalidResponseError(f"Successful propstat without prop: {href!r}")
         for child in prop:
             found[child.tag] = child
 
-    resourcetype = found.get(_RESOURCETYPE)
+    resourcetype = found.get(RESOURCETYPE)
     if resourcetype is None:
         raise InvalidResponseError(f"No successful resourcetype for {href!r}")
 
     return PropfindResource(
         href=href,
-        is_collection=resourcetype.find(_COLLECTION) is not None,
-        content_length=_content_length(found.get(_GETCONTENTLENGTH), href),
-        etag=_text_of(found.get(_GETETAG)).strip() or None,
+        is_collection=resourcetype.find(COLLECTION) is not None,
+        content_length=_number(found.get(GETCONTENTLENGTH), "getcontentlength", href),
+        size=_size(found.get(OC_SIZE), href),
     )
 
 
-def _content_length(element: ET.Element | None, href: str) -> int | None:
+def _size(element: ET.Element | None, href: str) -> int | None:
+    # Nextcloud reports -1 for a folder size it has not computed yet.
+    if _text_of(element).strip() == "-1":
+        return None
+    return _number(element, "size", href)
+
+
+def _number(element: ET.Element | None, name: str, href: str) -> int | None:
     text = _text_of(element).strip()
     if not text:
         return None
     if not (text.isascii() and text.isdigit()):
-        raise InvalidResponseError(f"Invalid getcontentlength {text!r} for {href!r}")
+        raise InvalidResponseError(f"Invalid {name} {text!r} for {href!r}")
     return int(text)
 
 

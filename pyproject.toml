@@ -6,6 +6,7 @@ members = ["packages/*"]
 
 [dependency-groups]
 dev = [
+    "hypothesis==6.170.15",
     "pyrefly==1.4.1",
     "pytest==9.2.0",
     "pytest-cov==7.1.0",
@@ -17,21 +18,22 @@ dev = [
 
 [tool.ruff]
 target-version = "py314"
+line-length = 88
+src = ["packages/*/src", "packages/*/tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "PT"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "PT", "ASYNC"]
 
 [tool.ty.environment]
 python-version = "3.14"
 
 [tool.pyrefly]
 python-version = "3.14"
-project-includes = ["packages", "tests"]
-# Test helper modules are imported as top-level modules, like pytest does.
-search-path = ["tests", "tests/unit/storage"]
+project-includes = ["packages", "tests", "conftest.py"]
+search-path = ["packages/polari-storage/tests"]
 
 [tool.pytest]
-testpaths = ["tests"]
+testpaths = ["tests", "packages/*/tests"]
 addopts = [
     "-ra",
     "--strict-markers",
@@ -42,11 +44,12 @@ addopts = [
     "--cov-report=term-missing:skip-covered",
 ]
 markers = [
-    "integration: needs live Nextcloud config (NEXTCLOUD_USERNAME / NEXTCLOUD_PASSWORD / NEXTCLOUD_ROOT_PATH); run via `just test-integration`",
+    "integration: needs live Nextcloud config (NEXTCLOUD_BASE_URL / NEXTCLOUD_USERNAME / NEXTCLOUD_PASSWORD / NEXTCLOUD_ROOT_PATH); run via `just test-integration`",
 ]
 
 [tool.coverage.run]
 source = ["packages"]  # dirs, not pkgs: unimported files still count as 0%
+omit = ["packages/*/tests/*"]
 branch = true
 
 [tool.coverage.report]
