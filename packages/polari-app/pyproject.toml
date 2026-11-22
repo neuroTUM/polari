@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.14"
 dependencies = [
     "polari-explore",
+    "polari-storage",
 ]
 
 [project.scripts]
@@ -20,3 +21,4 @@ build-backend = "uv_build"
 
 [tool.uv.sources]
 polari-explore = { workspace = true }
+polari-storage = { workspace = true }

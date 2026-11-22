@@ -4,7 +4,13 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    "var", ["NEXTCLOUD_USERNAME", "NEXTCLOUD_PASSWORD", "NEXTCLOUD_ROOT_PATH"]
+    "var",
+    [
+        "NEXTCLOUD_BASE_URL",
+        "NEXTCLOUD_USERNAME",
+        "NEXTCLOUD_PASSWORD",
+        "NEXTCLOUD_ROOT_PATH",
+    ],
 )
 def test_config_present(var: str) -> None:
     # Reduce to a bool first: pytest's assertion rewriting would otherwise

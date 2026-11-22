@@ -1,13 +1,12 @@
-from pathlib import Path
-
 import pytest
-
-INTEGRATION_DIR = Path(__file__).parent / "integration"
 
 
 @pytest.hookimpl(tryfirst=True)  # tag before `-m` deselection runs
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Tag every test under tests/integration/ with the `integration` marker."""
+    """Tag every test below a ``tests/integration/`` folder as `integration`."""
     for item in items:
-        if item.path.is_relative_to(INTEGRATION_DIR):
+        if any(
+            folder.name == "integration" and folder.parent.name == "tests"
+            for folder in item.path.parents
+        ):
             item.add_marker(pytest.mark.integration)
