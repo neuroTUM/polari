@@ -19,7 +19,7 @@ jobs:
     steps:
       # Must be the first step. Blocks all egress except the endpoints below and
       # removes sudo, so PR code can't lift the firewall to exfiltrate secrets.
-      # Add the Nextcloud host here once tests talk to it.
+      # storage.neurotum.com is the Nextcloud server the tests talk to.
       - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
         with:
           egress-policy: block
@@ -31,6 +31,7 @@ jobs:
             releases.astral.sh:443
             pypi.org:443
             files.pythonhosted.org:443
+            storage.neurotum.com:443
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -43,5 +44,6 @@ jobs:
         env:
           NEXTCLOUD_USERNAME: ${{ secrets.NEXTCLOUD_USERNAME }}
           NEXTCLOUD_PASSWORD: ${{ secrets.NEXTCLOUD_PASSWORD }}
+          NEXTCLOUD_BASE_URL: ${{ vars.NEXTCLOUD_BASE_URL }} # non-secret environment variable
           NEXTCLOUD_ROOT_PATH: ${{ vars.NEXTCLOUD_ROOT_PATH }} # non-secret environment variable
         run: uv run pytest -m integration --tb=short
